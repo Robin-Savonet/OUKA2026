@@ -1,5 +1,7 @@
-my_project/
-    pyproject.toml
-    utils/
-        __init__.py
-        light_curve.py
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my_project"
+version = "0.1.0"
