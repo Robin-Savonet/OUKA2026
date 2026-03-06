@@ -1,8 +1,11 @@
 """
 merge_pipeline_dat.py
 
-Merges pipelineout_1_datasubset.dat and pipelineout_2_datasubset.dat into
-pipelineout_datasubset_all.dat, renumbering rows continuously across both files.
+Merges any number of pipelineout_N_datasubset.dat files into
+pipelineout_datasubset_all.dat, renumbering rows continuously across all files.
+
+The script auto-detects all pipelineout_N_datasubset.dat files present in the
+night directory and merges them in numerical order.
 
 Usage:
     python merge_pipeline_dat.py --target <target_name> --night <observation_night>
@@ -16,27 +19,57 @@ Expected folder structure:
             <observation_night>/
                 pipelineout_1_datasubset.dat
                 pipelineout_2_datasubset.dat
-                pipelineout_datasubset_all.dat   ← output written here
+                pipelineout_3_datasubset.dat   <- any number of subsets
+                ...
+                pipelineout_datasubset_all.dat <- output written here
 """
 
 import argparse
+import glob
 import os
+import re
 import sys
 
-# ── Parameters ────────────────────────────────────────────────────────────────
+# -- Parameters ----------------------------------------------------------------
 
-parser = argparse.ArgumentParser(description="Merge two pipeline .dat subsets.")
-parser.add_argument("--target",    required=True, help="Target name (folder)")
-parser.add_argument("--night",     required=True, help="Observation night date (folder)")
-parser.add_argument("--main_dir",  default=".",   help="Path to main folder (default: current directory)")
+parser = argparse.ArgumentParser(description="Merge N pipeline .dat subsets.")
+parser.add_argument("--target",   required=True, help="Target name (folder)")
+parser.add_argument("--night",    required=True, help="Observation night date (folder)")
+parser.add_argument("--main_dir", default=".",   help="Path to main folder (default: current directory)")
 args = parser.parse_args()
 
 night_dir   = os.path.join(args.main_dir, args.target, args.night)
-file1_path  = os.path.join(night_dir, "pipelineout_1_datasubset.dat")
-file2_path  = os.path.join(night_dir, "pipelineout_2_datasubset.dat")
 output_path = os.path.join(night_dir, "pipelineout_datasubset_all.dat")
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+if not os.path.isdir(night_dir):
+    sys.exit(f"ERROR: directory not found: {night_dir}")
+
+# -- Auto-detect subset files --------------------------------------------------
+
+pattern = os.path.join(night_dir, "pipelineout_*_datasubset.dat")
+found   = glob.glob(pattern)
+
+# Keep only files whose wildcard part is a plain integer (exclude 'all')
+subset_files = {}
+for path in found:
+    fname = os.path.basename(path)
+    m = re.match(r"pipelineout_(\d+)_datasubset\.dat$", fname)
+    if m:
+        subset_files[int(m.group(1))] = path
+
+if not subset_files:
+    sys.exit(f"ERROR: no pipelineout_N_datasubset.dat files found in:\n  {night_dir}")
+
+ordered_keys  = sorted(subset_files)
+ordered_paths = [subset_files[k] for k in ordered_keys]
+
+print(f"\n{'='*55}")
+print(f"  Found {len(ordered_paths)} subset file(s)")
+print(f"{'='*55}")
+for k, p in zip(ordered_keys, ordered_paths):
+    print(f"  [{k}] {os.path.basename(p)}")
+
+# -- Helpers -------------------------------------------------------------------
 
 def read_dat(path):
     """Return (header_line, data_rows) where data_rows is a list of raw lines."""
@@ -48,7 +81,7 @@ def read_dat(path):
         stripped = line.rstrip("\n")
         if stripped.startswith("#"):
             header = stripped
-        elif stripped.strip():          # skip blank lines
+        elif stripped.strip():
             data.append(stripped)
     return header, data
 
@@ -62,80 +95,80 @@ def reindex_row(row, new_index):
     parts[0] = str(new_index)
     return "\t".join(parts)
 
-# ── Read files ─────────────────────────────────────────────────────────────────
+def validate_contiguous(indices, label):
+    """Check that a list of indices starts at 1 and is fully contiguous."""
+    errors = []
+    if indices[0] != 1:
+        errors.append(f"{label} does not start at 1 (starts at {indices[0]})")
+    for i, (a, b) in enumerate(zip(indices, indices[1:]), start=1):
+        if b != a + 1:
+            errors.append(f"{label}: gap between rows {i} and {i+1} (indices {a} -> {b})")
+    return errors
 
-for p in (file1_path, file2_path):
-    if not os.path.isfile(p):
-        sys.exit(f"ERROR: file not found: {p}")
-
-header1, rows1 = read_dat(file1_path)
-header2, rows2 = read_dat(file2_path)
-
-if header1 != header2:
-    print(f"WARNING: headers differ!\n  File 1: {header1}\n  File 2: {header2}")
-
-n1 = len(rows1)
-n2 = len(rows2)
-
-# ── Validate original numbering ────────────────────────────────────────────────
+# -- Read & validate all source files ------------------------------------------
 
 print(f"\n{'='*55}")
-print(f"  Validation — original numbering")
+print(f"  Validation - original numbering")
 print(f"{'='*55}")
 
-errors = []
+all_errors  = []
+ref_header  = None
+all_rows    = []   # list of (file_number, rows_list, row_count)
 
-idx1 = [get_index(r) for r in rows1]
-idx2 = [get_index(r) for r in rows2]
+for k, path in zip(ordered_keys, ordered_paths):
+    header, rows = read_dat(path)
+    label = f"File {k}"
 
-# File 1: must start at 1, be contiguous
-if idx1[0] != 1:
-    errors.append(f"File 1 does not start at 1 (starts at {idx1[0]})")
-for i, (a, b) in enumerate(zip(idx1, idx1[1:]), start=1):
-    if b != a + 1:
-        errors.append(f"File 1: gap between rows {i} and {i+1} (indices {a} → {b})")
+    if ref_header is None:
+        ref_header = header
+    elif header != ref_header:
+        print(f"  WARNING: header of file {k} differs from file {ordered_keys[0]}!")
+        print(f"    Expected : {ref_header}")
+        print(f"    Got      : {header}")
 
-# File 2: must start at 1, be contiguous
-if idx2[0] != 1:
-    errors.append(f"File 2 does not start at 1 (starts at {idx2[0]})")
-for i, (a, b) in enumerate(zip(idx2, idx2[1:]), start=1):
-    if b != a + 1:
-        errors.append(f"File 2: gap between rows {i} and {i+1} (indices {a} → {b})")
+    indices = [get_index(r) for r in rows]
+    errors  = validate_contiguous(indices, label)
+    all_errors.extend(errors)
 
-if errors:
-    print("  ✗ Issues found in source files:")
-    for e in errors:
+    if not errors:
+        print(f"  v {label}: indices {indices[0]} -> {indices[-1]}  ({len(rows)} rows)")
+
+    all_rows.append((k, rows, len(rows)))
+
+if all_errors:
+    print("  x Issues found:")
+    for e in all_errors:
         print(f"    - {e}")
-else:
-    print(f"  ✓ File 1: indices {idx1[0]} → {idx1[-1]}  ({n1} rows)")
-    print(f"  ✓ File 2: indices {idx2[0]} → {idx2[-1]}  ({n2} rows)")
-    print(f"  ✓ Both files start at 1 and are contiguous.")
+    sys.exit("Aborting merge due to validation errors in source files.")
 
-# ── Reindex and merge ──────────────────────────────────────────────────────────
+# -- Reindex and merge ---------------------------------------------------------
 
-merged_rows = rows1[:]                                    # File 1 keeps indices 1..n1
-offset      = n1
-for i, row in enumerate(rows2):
-    merged_rows.append(reindex_row(row, offset + i + 1)) # File 2 gets n1+1..n1+n2
+merged_rows = []
+offset      = 0
 
-# ── Write output ───────────────────────────────────────────────────────────────
+for k, rows, n in all_rows:
+    for i, row in enumerate(rows):
+        merged_rows.append(reindex_row(row, offset + i + 1))
+    offset += n
+
+# -- Write output --------------------------------------------------------------
 
 with open(output_path, "w") as f:
-    f.write(header1 + "\n")
+    f.write(ref_header + "\n")
     for row in merged_rows:
         f.write(row + "\n")
 
-# ── Validate merged file ───────────────────────────────────────────────────────
+# -- Validate merged file ------------------------------------------------------
 
 print(f"\n{'='*55}")
-print(f"  Validation — merged file")
+print(f"  Validation - merged file")
 print(f"{'='*55}")
 
-_, merged_check = read_dat(output_path)
-midx = [get_index(r) for r in merged_check]
-
-merge_errors = []
-expected_total = n1 + n2
+_, merged_check  = read_dat(output_path)
+midx             = [get_index(r) for r in merged_check]
+expected_total   = sum(n for _, _, n in all_rows)
+counts_str       = " + ".join(str(n) for _, _, n in all_rows)
+merge_errors     = []
 
 if len(merged_check) != expected_total:
     merge_errors.append(f"Row count mismatch: expected {expected_total}, got {len(merged_check)}")
@@ -145,20 +178,29 @@ if midx[-1] != expected_total:
     merge_errors.append(f"Last index is {midx[-1]}, expected {expected_total}")
 for i, (a, b) in enumerate(zip(midx, midx[1:]), start=1):
     if b != a + 1:
-        merge_errors.append(f"Gap in merged file between rows {i} and {i+1} (indices {a} → {b})")
+        merge_errors.append(f"Gap in merged file between rows {i} and {i+1} (indices {a} -> {b})")
 
-# Check the seam specifically
-seam_last  = get_index(merged_rows[n1 - 1])
-seam_first = get_index(merged_rows[n1])
+# Check every seam between consecutive files
+seam_pos = 0
+for idx, (k, rows, n) in enumerate(all_rows[:-1]):
+    seam_pos   += n
+    seam_last   = get_index(merged_rows[seam_pos - 1])
+    seam_first  = get_index(merged_rows[seam_pos])
+    next_k      = all_rows[idx + 1][0]
+    if seam_first != seam_last + 1:
+        merge_errors.append(
+            f"Seam between file {k} and file {next_k}: "
+            f"{seam_last} -> {seam_first} (not continuous)"
+        )
+    else:
+        print(f"  v Seam file {k}->{next_k}  : ...{seam_last} | {seam_first}...")
 
 if merge_errors:
-    print("  ✗ Issues found in merged file:")
+    print("  x Issues found in merged file:")
     for e in merge_errors:
         print(f"    - {e}")
 else:
-    print(f"  ✓ Total rows : {len(merged_check)}  (= {n1} + {n2})")
-    print(f"  ✓ Index range: {midx[0]} → {midx[-1]}  (continuous)")
-    print(f"  ✓ Seam check : last of file 1 = {seam_last}, "
-          f"first of file 2 = {seam_first}  ✓")
+    print(f"  v Total rows : {len(merged_check)}  (= {counts_str})")
+    print(f"  v Index range: {midx[0]} -> {midx[-1]}  (continuous)")
 
 print(f"\n  Output written to:\n  {output_path}\n")
