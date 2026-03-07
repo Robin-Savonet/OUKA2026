@@ -64,7 +64,7 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night"):
 
     fig, axes = plt.subplots(
         1, n,
-        figsize=(4 * n, 5),
+        figsize=(5.5 * n, 5),
         sharey=True,
         gridspec_kw={"width_ratios": widths}
     )
@@ -96,6 +96,6 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night"):
         if ax is axes[0]:
             ax.set_ylabel("Relative Flux  (rel_flux_T1)", fontsize=11)
 
-    fig.suptitle(f"Light curve  —  {TARGET}  —  all nights", fontsize=13, fontweight="bold")
+    fig.suptitle(f"Light curve - {TARGET}  - All observation nights", fontsize=13, fontweight="bold")
     fig.tight_layout()
     plt.show()
