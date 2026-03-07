@@ -11,7 +11,7 @@ Usage:
     python merge_pipeline_dat.py --target <target_name> --night <observation_night>
 
 Example:
-    python merge_pipeline_dat.py --target MyTarget --night 2024-07-15
+    python merge_pipeline_dat.py --target 2001_EC --night 26-03-01
 
 Expected folder structure:
     <main_folder>/
