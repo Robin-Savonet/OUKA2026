@@ -11,7 +11,7 @@ Usage:
     python merge_pipeline_dat.py --target <target_name> --night <observation_night>
 
 Example:
-    python merge_pipeline_dat.py --target 2001_EC --night 26-03-01
+    python merge_pipeline_dat.py --target 2001_EC --night 26_03_01
 
 Expected folder structure:
     <main_folder>/
@@ -203,4 +203,14 @@ else:
     print(f"  v Total rows : {len(merged_check)}  (= {counts_str})")
     print(f"  v Index range: {midx[0]} -> {midx[-1]}  (continuous)")
 
-print(f"\n  Output written to:\n  {output_path}\n")
+
+# -- Export last 3 columns to .txt ---------------------------------------------
+
+txt_path = os.path.join(night_dir, "data.txt")
+
+with open(txt_path, "w") as f:
+    for row in merged_rows:
+        cols = row.split("\t")
+        f.write("\t".join(cols[-3:]) + "\n")
+
+print(f"\n  3-column txt written to:\n  {txt_path}\n")
