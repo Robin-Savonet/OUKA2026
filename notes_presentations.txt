@@ -1,0 +1,17 @@
+méthode plus simple pour parallax et calculer erreur
+regarder comment peranso fonctionne
+estimer erreur sur la période avec largeur du pic
+why R filter for light curve
+references for values
+why precision is good: more data and more distant data
+expliquer calibration comment c'est soustrait, un fichier de calibration est divisé pas soustrait (masters permet meilleure qualité car on prend la moyenne, bruit est divisé par sqrt(nombre d'images))
+mettre arcsecond sur images (scale, 1 pixel = combien d'arcsecondes)
+differential photometry cancels atmospheric noise, what comparison stars have to satisfy (be in uncrowded régions, not variable and similar magnitude as target)
+how to choose optimal aperture
+pourquoi on a pas visé les 30000 ADUs (target faible donc on aurait eu besoin d'un long temps d'exposition et etoiles aurait trail)
+airmass is used because flux decreases when target gets lower on the horizon so have to take into account
+binning 2 to increase SNR
+assume typical albedo and derive the size potentially
+
+
+
