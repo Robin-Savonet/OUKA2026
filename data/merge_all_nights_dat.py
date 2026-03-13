@@ -157,10 +157,17 @@ for night, rows, n in all_rows:
 
 # -- Write output --------------------------------------------------------------
 
+N_COLS = 5  # number of columns to keep in the output
+
+print(f"Writing to: {output_path}")
+
+if os.path.exists(output_path):
+    os.remove(output_path)
+
 with open(output_path, "w") as f:
-    f.write(ref_header + "\n")
+    f.write("\t".join(ref_header.split("\t")[:N_COLS]) + "\n")
     for row in merged_rows:
-        f.write(row + "\n")
+        f.write("\t".join(row.split("\t")[:N_COLS]) + "\n")
 
 # -- Validate merged file ------------------------------------------------------
 
