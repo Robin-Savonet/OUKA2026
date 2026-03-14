@@ -223,6 +223,6 @@ txt_path = os.path.join(target_dir, "data_all.txt")
 with open(txt_path, "w") as f:
     for row in merged_rows:
         cols = row.split("\t")
-        f.write("\t".join(cols[-3:]) + "\n")
+        f.write("\t".join(cols[2:5]) + "\n")
 
 print(f"  3-column txt written to:\n  {txt_path}\n")
