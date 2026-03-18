@@ -15,5 +15,13 @@ binning 2 to increase SNR
 assume typical albedo and derive the size potentially
 bias not noise, systematic uncertainty so we can correct for it 
 
+visibility plot, observing plan, structure, why, telescope information not really needed
+observation summary (dates, time, exposure time)
+calibration
+analysis, absolute photometry describe formula, how to produce light curve
+search of the period with peranso, fourier transform
+axis ratio ?
+colors, explain filters, asteroid class
+orbit, explain astrometrica
 
 
