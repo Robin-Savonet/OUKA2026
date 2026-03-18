@@ -26,5 +26,6 @@ orbit, explain astrometrica
 
 astrometrica
 have to enter the precise position of the telescope using file (focal length or position angle=how ccd is oriented, gaia broadband with R filter)
+astrometrica knows stars based on the fact that it is at the same position and it uses stars from reference (you can see the precision of a star by clicking on one)
 
 
