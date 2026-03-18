@@ -24,4 +24,7 @@ axis ratio ?
 colors, explain filters, asteroid class
 orbit, explain astrometrica
 
+astrometrica
+have to enter the precise position of the telescope using file (focal length or position angle=how ccd is oriented, gaia broadband with R filter)
+
 
