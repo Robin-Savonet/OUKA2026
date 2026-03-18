@@ -98,28 +98,17 @@ def plot_light_curve(TARGET, NIGHT, bjd, flux, err, period=None, subtract_mean=T
 
 
 def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merge_nights=False):
-    """
-    Plot all nights as separate subplots side by side, sharing the y-axis.
-    Each panel covers only its own observation window — no dead space between nights.
-    If period and merge_nights=True, all nights are folded onto a single shared graph.
-
-    The nightly mean is always subtracted before plotting.
-
-    Parameters
-    ----------
-    TARGET        : str        — target name, used in the figure title
-    df            : DataFrame  — with columns J.D.-2400000, rel_flux_T1, rel_flux_err_T1, <night_col>
-    night_col     : str        — column identifying each night (default: 'night')
-    period        : float|None — if given, x-axis shows phase in [0, 1] over one period (hours)
-    merge_nights  : bool       — if True and period is given, overlay all nights on one plot
-    """
     nights = sorted(df[night_col].unique())
-
-    # Subtract nightly mean upfront for all nights
+    
     df = df.copy()
+
+    # Normalise each night: (flux - nightly_mean) / nightly_mean
+    # This gives fractional flux deviation, physically meaningful across nights
     for night in nights:
         mask = df[night_col] == night
-        df.loc[mask, "rel_flux_T1"] = _subtract_mean(df.loc[mask, "rel_flux_T1"])
+        nightly_mean = df.loc[mask, "rel_flux_T1"].mean()
+        df.loc[mask, "rel_flux_T1"] = (df.loc[mask, "rel_flux_T1"] - nightly_mean) / nightly_mean
+        df.loc[mask, "rel_flux_err_T1"] = df.loc[mask, "rel_flux_err_T1"] / nightly_mean
 
     # Global t_0: BJD of the brightest point across all nights
     if period is not None:
@@ -129,16 +118,14 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
     if period is not None and merge_nights:
         fig, ax = plt.subplots(figsize=(10, 5))
         colors = plt.cm.tab10.colors
-
         for i, night in enumerate(nights):
             sub   = df[df[night_col] == night]
             phase = _compute_phase(sub["J.D.-2400000"], t_0, period)
             _errorbar(ax, phase, sub["rel_flux_T1"], sub["rel_flux_err_T1"],
                       color=colors[i % len(colors)], ecolor="lightgray", label=night)
-
         ax.set_xlim(-0.02, 1.02)
         ax.set_xlabel(f"Phase  (period = {period} h)", fontsize=12)
-        ax.set_ylabel("Relative Flux − nightly mean", fontsize=12)
+        ax.set_ylabel("Relative Flux − global mean", fontsize=12)
         ax.set_title(f"Phase-folded light curve — {TARGET} — All nights", fontsize=13, fontweight="bold")
         _style_ax(ax)
         ax.legend(fontsize=10, title="Night")
@@ -148,7 +135,6 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
 
     # ── One subplot per night ──────────────────────────────────────────────────
     n = len(nights)
-
     if period is None:
         spans  = [(df[df[night_col] == night]["J.D.-2400000"].max() - df[df[night_col] == night]["J.D.-2400000"].min()) for night in nights]
         widths = [max(s, max(spans) * 0.05) for s in spans]
@@ -163,11 +149,9 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
         axes = [axes]
 
     bjd_offset = int(df["J.D.-2400000"].min())
-
     for ax, night in zip(axes, nights):
         sub  = df[df[night_col] == night]
         bjd  = sub["J.D.-2400000"]
-
         if period is not None:
             x_data  = _compute_phase(bjd, t_0, period)
             x_label = f"Phase  (period = {period} h)"
@@ -175,14 +159,12 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
         else:
             x_data  = bjd - bjd_offset
             x_label = f"JD − {bjd_offset}"
-
         _errorbar(ax, x_data, sub["rel_flux_T1"], sub["rel_flux_err_T1"])
         ax.set_xlabel(x_label, fontsize=10)
         ax.set_title(night, fontsize=10, fontweight="bold")
         _style_ax(ax)
-
         if ax is axes[0]:
-            ax.set_ylabel("Relative Flux − nightly mean", fontsize=11)
+            ax.set_ylabel("Relative Flux − global mean", fontsize=11)
 
     fig.suptitle(f"Light curve — {TARGET} — All observation nights", fontsize=13, fontweight="bold")
     fig.tight_layout()
