@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 from astropy.timeseries import LombScargle
+from math import floor, ceil
 
 
 def _subtract_mean(flux):
@@ -97,24 +98,22 @@ def plot_light_curve(TARGET, NIGHT, bjd, flux, err, period=None, subtract_mean=T
     plt.show()
 
 
-def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merge_nights=False):
+def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merge_nights=False, nb_plot_per_row=3):
     nights = sorted(df[night_col].unique())
-    
     df = df.copy()
 
     # Normalise each night: (flux - nightly_mean) / nightly_mean
-    # This gives fractional flux deviation, physically meaningful across nights
     for night in nights:
         mask = df[night_col] == night
         nightly_mean = df.loc[mask, "rel_flux_T1"].mean()
-        df.loc[mask, "rel_flux_T1"] = (df.loc[mask, "rel_flux_T1"] - nightly_mean) / nightly_mean
-        df.loc[mask, "rel_flux_err_T1"] = df.loc[mask, "rel_flux_err_T1"] / nightly_mean
+        df.loc[mask, "rel_flux_T1"]     = (df.loc[mask, "rel_flux_T1"] - nightly_mean) / nightly_mean
+        df.loc[mask, "rel_flux_err_T1"] =  df.loc[mask, "rel_flux_err_T1"] / nightly_mean
 
     # Global t_0: BJD of the brightest point across all nights
     if period is not None:
         t_0 = df["J.D.-2400000"].iloc[np.argmax(df["rel_flux_T1"].values)]
 
-    # ── Phase-folded single plot ───────────────────────────────────────────────
+    # ── Phase-folded single plot ───────────────────────────────────────────
     if period is not None and merge_nights:
         fig, ax = plt.subplots(figsize=(10, 5))
         colors = plt.cm.tab10.colors
@@ -125,7 +124,7 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
                       color=colors[i % len(colors)], ecolor="lightgray", label=night)
         ax.set_xlim(-0.02, 1.02)
         ax.set_xlabel(f"Phase  (period = {period} h)", fontsize=12)
-        ax.set_ylabel("Relative Flux − global mean", fontsize=12)
+        ax.set_ylabel("(F − F̄) / F̄  [fractional flux]", fontsize=12)
         ax.set_title(f"Phase-folded light curve — {TARGET} — All nights", fontsize=13, fontweight="bold")
         _style_ax(ax)
         ax.legend(fontsize=10, title="Night")
@@ -133,25 +132,41 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
         plt.show()
         return
 
-    # ── One subplot per night ──────────────────────────────────────────────────
-    n = len(nights)
-    if period is None:
-        spans  = [(df[df[night_col] == night]["J.D.-2400000"].max() - df[df[night_col] == night]["J.D.-2400000"].min()) for night in nights]
+    # ── One subplot per night, multi-row layout ────────────────────────────
+    n        = len(nights)
+    n_cols   = min(nb_plot_per_row, n)
+    n_rows   = ceil(n / n_cols)
+    bjd_offset = int(df["J.D.-2400000"].min())
+
+    # width_ratios only work cleanly per-row, so only use them for a single row;
+    # for multi-row we use uniform widths to avoid gridspec conflicts.
+    if n_rows == 1 and period is None:
+        spans  = [df[df[night_col] == night]["J.D.-2400000"].max()
+                - df[df[night_col] == night]["J.D.-2400000"].min()
+                for night in nights]
         widths = [max(s, max(spans) * 0.05) for s in spans]
+        gridspec_kw = {"width_ratios": widths}
     else:
-        widths = [1] * n
+        gridspec_kw = {}
 
     fig, axes = plt.subplots(
-        1, n, figsize=(5.5 * n, 5),
-        sharey=True, gridspec_kw={"width_ratios": widths}
+        n_rows, n_cols,
+        figsize=(5.5 * n_cols, 5 * n_rows),
+        sharey=True,
+        gridspec_kw=gridspec_kw,
     )
-    if n == 1:
-        axes = [axes]
 
-    bjd_offset = int(df["J.D.-2400000"].min())
-    for ax, night in zip(axes, nights):
-        sub  = df[df[night_col] == night]
-        bjd  = sub["J.D.-2400000"]
+    # Flatten axes into a 1-D list regardless of shape
+    axes_flat = np.array(axes).flatten().tolist()
+
+    # Hide any unused subplots in the last row
+    for ax in axes_flat[n:]:
+        ax.set_visible(False)
+
+    for ax, night in zip(axes_flat, nights):
+        sub = df[df[night_col] == night]
+        bjd = sub["J.D.-2400000"]
+
         if period is not None:
             x_data  = _compute_phase(bjd, t_0, period)
             x_label = f"Phase  (period = {period} h)"
@@ -159,12 +174,15 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
         else:
             x_data  = bjd - bjd_offset
             x_label = f"JD − {bjd_offset}"
+
         _errorbar(ax, x_data, sub["rel_flux_T1"], sub["rel_flux_err_T1"])
         ax.set_xlabel(x_label, fontsize=10)
         ax.set_title(night, fontsize=10, fontweight="bold")
         _style_ax(ax)
-        if ax is axes[0]:
-            ax.set_ylabel("Relative Flux − global mean", fontsize=11)
+
+        # Y-label only on the leftmost column of each row
+        if ax is axes_flat[0] or axes_flat.index(ax) % n_cols == 0:
+            ax.set_ylabel("(F − F̄) / F̄  [fractional flux]", fontsize=11)
 
     fig.suptitle(f"Light curve — {TARGET} — All observation nights", fontsize=13, fontweight="bold")
     fig.tight_layout()
