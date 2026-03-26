@@ -4,6 +4,9 @@ merge_pipeline_dat.py
 Merges any number of pipelineout_N_datasubset.dat files into
 pipelineout_datasubset_all.dat, renumbering rows continuously across all files.
 
+Each subset's flux is normalised to (F - F_mean) / F_mean before merging to
+remove baseline offsets between subsets observed under different conditions.
+
 The script auto-detects all pipelineout_N_datasubset.dat files present in the
 night directory and merges them in numerical order.
 
@@ -29,6 +32,7 @@ import glob
 import os
 import re
 import sys
+import numpy as np
 
 # -- Parameters ----------------------------------------------------------------
 
@@ -105,6 +109,38 @@ def validate_contiguous(indices, label):
             errors.append(f"{label}: gap between rows {i} and {i+1} (indices {a} -> {b})")
     return errors
 
+def get_col_indices(header):
+    """Return (flux_col_idx, err_col_idx) from the header line, by column name."""
+    cols = header.lstrip("#").split("\t")
+    cols = [c.strip() for c in cols]
+    try:
+        flux_idx = cols.index("rel_flux_T1")
+        err_idx  = cols.index("rel_flux_err_T1")
+    except ValueError as e:
+        sys.exit(f"ERROR: could not find flux columns in header: {e}\n  Header: {header}")
+    return flux_idx, err_idx
+
+def normalise_rows(rows, flux_idx, err_idx):
+    """
+    Normalise flux for a list of tab-separated row strings.
+    Applies (F - F_mean) / F_mean and scales errors by 1 / F_mean.
+    Returns the modified rows and the original mean.
+    """
+    flux_vals = np.array([float(r.split("\t")[flux_idx]) for r in rows])
+    err_vals  = np.array([float(r.split("\t")[err_idx])  for r in rows])
+
+    mean      = flux_vals.mean()
+    norm_flux = (flux_vals - mean) / mean
+    norm_err  = err_vals / mean
+
+    normalised = []
+    for row, f, e in zip(rows, norm_flux, norm_err):
+        parts           = row.split("\t")
+        parts[flux_idx] = f"{f:.10f}"
+        parts[err_idx]  = f"{e:.10f}"
+        normalised.append("\t".join(parts))
+    return normalised, mean
+
 # -- Read & validate all source files ------------------------------------------
 
 print(f"\n{'='*55}")
@@ -141,12 +177,26 @@ if all_errors:
         print(f"    - {e}")
     sys.exit("Aborting merge due to validation errors in source files.")
 
+# -- Normalise each subset flux before merging ---------------------------------
+
+flux_idx, err_idx = get_col_indices(ref_header)
+
+print(f"\n{'='*55}")
+print(f"  Normalising flux per subset  (col {flux_idx}: rel_flux_T1)")
+print(f"{'='*55}")
+
+all_rows_norm = []
+for k, rows, n in all_rows:
+    norm_rows, raw_mean = normalise_rows(rows, flux_idx, err_idx)
+    print(f"  File {k}: subset mean = {raw_mean:.6f}  ->  normalised to 0")
+    all_rows_norm.append((k, norm_rows, n))
+
 # -- Reindex and merge ---------------------------------------------------------
 
 merged_rows = []
 offset      = 0
 
-for k, rows, n in all_rows:
+for k, rows, n in all_rows_norm:
     for i, row in enumerate(rows):
         merged_rows.append(reindex_row(row, offset + i + 1))
     offset += n
@@ -203,14 +253,13 @@ else:
     print(f"  v Total rows : {len(merged_check)}  (= {counts_str})")
     print(f"  v Index range: {midx[0]} -> {midx[-1]}  (continuous)")
 
-
-# -- Export last 3 columns to .txt ---------------------------------------------
+# -- Export to .txt (skip index + Label, keep all data columns) ----------------
 
 txt_path = os.path.join(night_dir, "data.txt")
 
 with open(txt_path, "w") as f:
     for row in merged_rows:
         cols = row.split("\t")
-        f.write("\t".join(cols[-3:]) + "\n")
+        f.write("\t".join(cols[2:]) + "\n")  # skip index + Label, keep everything else
 
-print(f"\n  3-column txt written to:\n  {txt_path}\n")
+print(f"\n  Full-column txt written to:\n  {txt_path}\n")

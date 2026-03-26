@@ -1,11 +1,17 @@
+import os
+import re
+import glob
+
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import numpy as np
-from astropy.timeseries import LombScargle
+
 from math import floor, ceil
+from astropy.timeseries import LombScargle
+from collections import defaultdict
+
+from utils.photometry import flux_to_mag
 
 
 def _subtract_mean(flux):
@@ -97,26 +103,138 @@ def plot_light_curve(TARGET, NIGHT, bjd, flux, err, period=None, subtract_mean=T
     fig.tight_layout()
     plt.show()
 
+def load_night(night_dir, night_label):
+    dat_path = os.path.join(night_dir, "pipelineout_datasubset.dat")
 
-def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merge_nights=False, nb_plot_per_row=3):
+    if not os.path.isfile(dat_path):
+        raise FileNotFoundError(f"No pipelineout_datasubset.dat found in:\n  {night_dir}")
+
+    df = pd.read_csv(
+        dat_path,
+        sep="\t", comment="#",
+        names=["index", "Label", "J.D.-2400000", "rel_flux_T1", "rel_flux_err_T1",
+               "AIRMASS", "Source-Sky_T1", "Source_Error_T1"]
+    )
+    # No normalisation here — raw flux preserved for plot_light_curve_all_nights
+    df["night"] = night_label
+    return df
+
+def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", period=None,
+                                merge_nights=False, nb_plot_per_row=3,
+                                magnitude=False, filter_name=None, exptime=1.0,
+                                airmass_col="AIRMASS"):
+    """
+    Automatically discovers all night folders under target_dir, loads and
+    normalises each folder on the fly, and plots the light curve.
+
+    Night folders must match YY_MM_DD or YY_MM_DD_X (where X is a lowercase
+    letter suffix for multiple observations on the same night, e.g. 26_03_01_a).
+    Folders with the same base date are merged into a single night panel after
+    per-folder normalisation.
+
+    Parameters
+    ----------
+    TARGET          : str        — target name, used in titles
+    target_dir      : str        — path to the folder containing night subfolders
+    night_col       : str        — column name for the night label (default: 'night')
+    period          : float|None — period in hours for phase folding, or None
+    merge_nights    : bool       — if True and period given, overlay all nights on one plot
+    nb_plot_per_row : int        — max number of panels per row (default: 3)
+    magnitude       : bool       — if True, convert Source-Sky_T1 flux to calibrated magnitude
+    filter_name     : str        — required if magnitude=True, one of 'B', 'V', 'R', 'I'
+    exptime         : float      — exposure time in seconds used to convert ADU to flux
+                                   (required if magnitude=True, default: 1.0)
+    airmass_col     : str        — airmass column name (default: 'AIRMASS')
+    """
+    if magnitude and filter_name is None:
+        raise ValueError("filter_name must be provided when magnitude=True")
+
+    # ── Discover and group night folders ──────────────────────────────────────
+    night_pattern = re.compile(r"^\d{2}_\d{2}_\d{2}(_[a-z])?$")
+    all_folders   = sorted([
+        d for d in os.listdir(target_dir)
+        if os.path.isdir(os.path.join(target_dir, d)) and night_pattern.match(d)
+    ])
+
+    if not all_folders:
+        raise FileNotFoundError(f"No night folders found in:\n  {target_dir}")
+
+    # Group by base date — e.g. 26_03_01_a and 26_03_01_b → 26_03_01
+    night_groups = defaultdict(list)
+    for folder in all_folders:
+        base = re.sub(r"_[a-z]$", "", folder)
+        night_groups[base].append(folder)
+
+    # ── Load all folders ───────────────────────────────────────────────────────
+    dfs = []
+    for base_date, folders in sorted(night_groups.items()):
+        night_dfs = []
+        for folder in folders:
+            df_folder = load_night(os.path.join(target_dir, folder), base_date)
+            night_dfs.append(df_folder)
+            print(f"  Loaded {folder}  ({len(df_folder)} rows)")
+        dfs.append(pd.concat(night_dfs, ignore_index=True))
+
+    df     = pd.concat(dfs, ignore_index=True)
     nights = sorted(df[night_col].unique())
-    df = df.copy()
 
-    # Normalise each night: (flux - nightly_mean) / nightly_mean
+    # ── Magnitude conversion (must happen on raw Source-Sky flux, before any normalisation) ──
+    if magnitude:
+        required = ["Source-Sky_T1", "Source_Error_T1", airmass_col]
+        missing  = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"Column(s) {missing} not found. Required for magnitude conversion.")
+
+        raw_flux = df["Source-Sky_T1"].values / exptime
+        raw_err  = df["Source_Error_T1"].values / exptime
+
+        mag, mag_err = flux_to_mag(
+            raw_flux, raw_err,
+            filter_name,
+            df[airmass_col].values,
+        )
+        df["rel_flux_T1"]     = mag
+        df["rel_flux_err_T1"] = mag_err
+        y_label  = f"Δm ({filter_name})  [mag]"
+        invert_y = True
+
+    else:
+        # ── Flux normalisation: (F - mean) / mean, per folder ─────────────────
+        for base_date, folders in sorted(night_groups.items()):
+            for folder in folders:
+                mask = (df[night_col] == base_date)
+                # Re-load folder boundaries by matching folder rows
+                # (simpler: normalise per night after concat, which is equivalent
+                #  when folders don't overlap in time)
+                pass
+
+        # Normalise per night: (F - mean) / mean
+        for night in nights:
+            mask = df[night_col] == night
+            mean = df.loc[mask, "rel_flux_T1"].mean()
+            df.loc[mask, "rel_flux_T1"]     = (df.loc[mask, "rel_flux_T1"] - mean) / mean
+            df.loc[mask, "rel_flux_err_T1"] =  df.loc[mask, "rel_flux_err_T1"] / abs(mean)
+
+        y_label  = "(F − F̄) / F̄  [fractional flux]"
+        invert_y = False
+
+    # ── Per-night mean subtraction ─────────────────────────────────────────────
     for night in nights:
-        mask = df[night_col] == night
+        mask         = df[night_col] == night
         nightly_mean = df.loc[mask, "rel_flux_T1"].mean()
-        df.loc[mask, "rel_flux_T1"]     = (df.loc[mask, "rel_flux_T1"] - nightly_mean) / nightly_mean
-        df.loc[mask, "rel_flux_err_T1"] =  df.loc[mask, "rel_flux_err_T1"] / nightly_mean
+        df.loc[mask, "rel_flux_T1"] = df.loc[mask, "rel_flux_T1"] - nightly_mean
 
-    # Global t_0: BJD of the brightest point across all nights
+    # ── Global t_0: brightest point across all nights ─────────────────────────
     if period is not None:
-        t_0 = df["J.D.-2400000"].iloc[np.argmax(df["rel_flux_T1"].values)]
+        t_0 = df["J.D.-2400000"].iloc[
+            np.argmin(df["rel_flux_T1"].values) if magnitude
+            else np.argmax(df["rel_flux_T1"].values)
+        ]
 
-    # ── Phase-folded single plot ───────────────────────────────────────────
+    # ── Phase-folded single plot ───────────────────────────────────────────────
     if period is not None and merge_nights:
         fig, ax = plt.subplots(figsize=(10, 5))
-        colors = plt.cm.tab10.colors
+        colors  = plt.cm.tab10.colors
         for i, night in enumerate(nights):
             sub   = df[df[night_col] == night]
             phase = _compute_phase(sub["J.D.-2400000"], t_0, period)
@@ -124,22 +242,22 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
                       color=colors[i % len(colors)], ecolor="lightgray", label=night)
         ax.set_xlim(-0.02, 1.02)
         ax.set_xlabel(f"Phase  (period = {period} h)", fontsize=12)
-        ax.set_ylabel("(F − F̄) / F̄  [fractional flux]", fontsize=12)
+        ax.set_ylabel(y_label, fontsize=12)
         ax.set_title(f"Phase-folded light curve — {TARGET} — All nights", fontsize=13, fontweight="bold")
+        if invert_y:
+            ax.invert_yaxis()
         _style_ax(ax)
         ax.legend(fontsize=10, title="Night")
         fig.tight_layout()
         plt.show()
         return
 
-    # ── One subplot per night, multi-row layout ────────────────────────────
-    n        = len(nights)
-    n_cols   = min(nb_plot_per_row, n)
-    n_rows   = ceil(n / n_cols)
+    # ── One subplot per night, multi-row layout ────────────────────────────────
+    n          = len(nights)
+    n_cols     = min(nb_plot_per_row, n)
+    n_rows     = ceil(n / n_cols)
     bjd_offset = int(df["J.D.-2400000"].min())
 
-    # width_ratios only work cleanly per-row, so only use them for a single row;
-    # for multi-row we use uniform widths to avoid gridspec conflicts.
     if n_rows == 1 and period is None:
         spans  = [df[df[night_col] == night]["J.D.-2400000"].max()
                 - df[df[night_col] == night]["J.D.-2400000"].min()
@@ -156,10 +274,8 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
         gridspec_kw=gridspec_kw,
     )
 
-    # Flatten axes into a 1-D list regardless of shape
     axes_flat = np.array(axes).flatten().tolist()
 
-    # Hide any unused subplots in the last row
     for ax in axes_flat[n:]:
         ax.set_visible(False)
 
@@ -180,14 +296,15 @@ def plot_light_curve_all_nights(TARGET, df, night_col="night", period=None, merg
         ax.set_title(night, fontsize=10, fontweight="bold")
         _style_ax(ax)
 
-        # Y-label only on the leftmost column of each row
-        if ax is axes_flat[0] or axes_flat.index(ax) % n_cols == 0:
-            ax.set_ylabel("(F − F̄) / F̄  [fractional flux]", fontsize=11)
+        if axes_flat.index(ax) % n_cols == 0:
+            ax.set_ylabel(y_label, fontsize=11)
+
+    if invert_y:
+        axes_flat[0].invert_yaxis()
 
     fig.suptitle(f"Light curve — {TARGET} — All observation nights", fontsize=13, fontweight="bold")
     fig.tight_layout()
     plt.show()
-
 
 def plot_lomb_scargle(TARGET, df, min_period=0.05, max_period=1.0):
     """

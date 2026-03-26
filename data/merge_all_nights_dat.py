@@ -157,7 +157,7 @@ for night, rows, n in all_rows:
 
 # -- Write output --------------------------------------------------------------
 
-N_COLS = 5  # number of columns to keep in the output
+N_COLS = 8  # number of columns to keep in the output
 
 print(f"Writing to: {output_path}")
 
@@ -216,13 +216,12 @@ else:
 
 print(f"\n  Output written to:\n  {output_path}\n")
 
-# -- Export last 3 columns to .txt ---------------------------------------------
-
+# -- Export to .txt ------------------------------------------------------------
 txt_path = os.path.join(target_dir, "data_all.txt")
 
 with open(txt_path, "w") as f:
     for row in merged_rows:
         cols = row.split("\t")
-        f.write("\t".join(cols[2:5]) + "\n")
+        f.write("\t".join(cols[2:]) + "\n")  # skip index + Label, keep everything else
 
-print(f"  3-column txt written to:\n  {txt_path}\n")
+print(f"  Full-column txt written to:\n  {txt_path}\n")
