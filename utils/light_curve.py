@@ -119,6 +119,63 @@ def load_night(night_dir, night_label):
     df["night"] = night_label
     return df
 
+def _align_nights_by_phase(df, night_col, period, t_0, magnitude=False):
+    """
+    Instead of subtracting each night's own mean, find per-night offsets
+    that minimise residuals relative to a reference night (the one with
+    most data points), using phase-overlap regions.
+    """
+    nights = sorted(df[night_col].unique())
+    phases = _compute_phase(df["J.D.-2400000"], t_0, period)
+    df     = df.copy()
+    df["phase"] = phases
+
+    # Use the night with the most points as reference (offset = 0)
+    ref_night = max(nights, key=lambda n: (df[night_col] == n).sum())
+    offsets   = {ref_night: 0.0}
+
+    ref_data = df[df[night_col] == ref_night].sort_values("phase")
+
+    for night in nights:
+        if night == ref_night:
+            continue
+        sub = df[df[night_col] == night].sort_values("phase")
+
+        # Find phase overlap between this night and reference
+        phase_min = max(sub["phase"].min(), ref_data["phase"].min())
+        phase_max = min(sub["phase"].max(), ref_data["phase"].max())
+
+        if phase_max - phase_min < 0.05:
+            # No meaningful overlap — fall back to zero offset
+            print(f"  WARNING: night {night} has little phase overlap with reference, offset set to 0")
+            offsets[night] = 0.0
+            continue
+
+        # Interpolate reference onto this night's phase grid (overlap only)
+        mask_night = (sub["phase"] >= phase_min) & (sub["phase"] <= phase_max)
+        mask_ref   = (ref_data["phase"] >= phase_min) & (ref_data["phase"] <= phase_max)
+
+        if mask_night.sum() < 2 or mask_ref.sum() < 2:
+            offsets[night] = 0.0
+            continue
+
+        interp_ref = np.interp(
+            sub.loc[mask_night, "phase"].values,
+            ref_data["phase"].values,
+            ref_data["rel_flux_T1"].values
+        )
+        offset = np.median(sub.loc[mask_night, "rel_flux_T1"].values - interp_ref)
+        offsets[night] = offset
+        print(f"  Night {night}: phase overlap [{phase_min:.2f}, {phase_max:.2f}], offset = {offset:+.4f}")
+
+    # Apply offsets
+    for night, offset in offsets.items():
+        mask = df[night_col] == night
+        df.loc[mask, "rel_flux_T1"] = df.loc[mask, "rel_flux_T1"] - offset
+
+    df.drop(columns="phase", inplace=True)
+    return df
+
 def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", period=None,
                                 merge_nights=False, nb_plot_per_row=3,
                                 magnitude=False, filter_name=None, exptime=1.0,
@@ -218,18 +275,21 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
         y_label  = "(F − F̄) / F̄  [fractional flux]"
         invert_y = False
 
-    # ── Per-night mean subtraction ─────────────────────────────────────────────
-    for night in nights:
-        mask         = df[night_col] == night
-        nightly_mean = df.loc[mask, "rel_flux_T1"].mean()
-        df.loc[mask, "rel_flux_T1"] = df.loc[mask, "rel_flux_T1"] - nightly_mean
-
     # ── Global t_0: brightest point across all nights ─────────────────────────
     if period is not None:
         t_0 = df["J.D.-2400000"].iloc[
             np.argmin(df["rel_flux_T1"].values) if magnitude
             else np.argmax(df["rel_flux_T1"].values)
         ]
+
+    # ── Zero-point alignment (replaces nightly mean subtraction) ──────────────
+    if period is not None:
+        df = _align_nights_by_phase(df, night_col, period, t_0, magnitude)
+    else:
+        for night in nights:
+            mask         = df[night_col] == night
+            nightly_mean = df.loc[mask, "rel_flux_T1"].mean()
+            df.loc[mask, "rel_flux_T1"] = df.loc[mask, "rel_flux_T1"] - nightly_mean
 
     # ── Phase-folded single plot ───────────────────────────────────────────────
     if period is not None and merge_nights:
