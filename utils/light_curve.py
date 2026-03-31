@@ -176,10 +176,52 @@ def _align_nights_by_phase(df, night_col, period, t_0, magnitude=False):
     df.drop(columns="phase", inplace=True)
     return df
 
+def _load_mag_correction(night_dir):
+    """
+    Load a mag_correction.dat file from a night folder if it exists.
+
+    The file is expected to have columns:
+        <index>   Date_________JDUT   mag_correction
+
+    Returns a (jd_array, correction_array) tuple, or (None, None) if absent.
+    """
+    corr_path = os.path.join(night_dir, "mag_correction.dat")
+    if not os.path.isfile(corr_path):
+        return None, None
+
+    corr_df = pd.read_csv(
+        corr_path,
+        sep="\t", comment="#",
+        names=["index", "Date_________JDUT", "mag_correction"],
+        skiprows=1,   # skip the header line
+    )
+    # Drop duplicate JD entries (keep first), then sort
+    corr_df = corr_df.drop_duplicates(subset="Date_________JDUT").sort_values("Date_________JDUT")
+    return corr_df["Date_________JDUT"].values, corr_df["mag_correction"].values
+
+
+def _apply_mag_correction(df, jd_corr, mag_corr):
+    """
+    Interpolate the magnitude correction onto the JD grid of df and add it
+    to rel_flux_T1 (which holds magnitudes at this stage).
+
+    Points outside the correction JD range are handled with boundary clamping
+    (np.interp default). Swap for scipy interp1d if extrapolation is preferred.
+    """
+    interp_corr = np.interp(
+        df["J.D.-2400000"].values,
+        jd_corr,
+        mag_corr,
+    )
+    df = df.copy()
+    df["rel_flux_T1"] = df["rel_flux_T1"] + interp_corr
+    return df
+
+
 def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", period=None,
                                 merge_nights=False, nb_plot_per_row=3,
                                 magnitude=False, filter_name=None, exptime=1.0,
-                                airmass_col="AIRMASS"):
+                                airmass_col="AIRMASS", use_mag_correction=True):
     """
     Automatically discovers all night folders under target_dir, loads and
     normalises each folder on the fly, and plots the light curve.
@@ -188,6 +230,10 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
     letter suffix for multiple observations on the same night, e.g. 26_03_01_a).
     Folders with the same base date are merged into a single night panel after
     per-folder normalisation.
+
+    If a night folder contains a mag_correction.dat file, the correction is
+    interpolated onto each observation's JD and subtracted from the magnitude
+    just before plotting (only active when magnitude=True).
 
     Parameters
     ----------
@@ -202,6 +248,8 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
     exptime         : float      — exposure time in seconds used to convert ADU to flux
                                    (required if magnitude=True, default: 1.0)
     airmass_col     : str        — airmass column name (default: 'AIRMASS')
+    use_mag_correction : bool   — if True (default), apply mag_correction.dat when found;
+                                   set to False to skip all corrections even if files exist
     """
     if magnitude and filter_name is None:
         raise ValueError("filter_name must be provided when magnitude=True")
@@ -222,20 +270,31 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
         base = re.sub(r"_[a-z]$", "", folder)
         night_groups[base].append(folder)
 
-    # ── Load all folders ───────────────────────────────────────────────────────
+    # ── Load all folders, collecting per-folder correction tables ─────────────
+    # corrections: {base_date: list of (jd_array, corr_array)}
+    corrections = defaultdict(list)
     dfs = []
+
     for base_date, folders in sorted(night_groups.items()):
         night_dfs = []
         for folder in folders:
-            df_folder = load_night(os.path.join(target_dir, folder), base_date)
+            folder_path = os.path.join(target_dir, folder)
+            df_folder   = load_night(folder_path, base_date)
             night_dfs.append(df_folder)
             print(f"  Loaded {folder}  ({len(df_folder)} rows)")
+
+            # Try to load a magnitude correction for this sub-folder
+            jd_corr, mag_corr = _load_mag_correction(folder_path)
+            if jd_corr is not None:
+                corrections[base_date].append((jd_corr, mag_corr))
+                print(f"    → mag_correction.dat found in {folder}  ({len(jd_corr)} points)")
+
         dfs.append(pd.concat(night_dfs, ignore_index=True))
 
     df     = pd.concat(dfs, ignore_index=True)
     nights = sorted(df[night_col].unique())
 
-    # ── Magnitude conversion (must happen on raw Source-Sky flux, before any normalisation) ──
+    # ── Magnitude conversion ───────────────────────────────────────────────────
     if magnitude:
         required = ["Source-Sky_T1", "Source_Error_T1", airmass_col]
         missing  = [c for c in required if c not in df.columns]
@@ -256,16 +315,7 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
         invert_y = True
 
     else:
-        # ── Flux normalisation: (F - mean) / mean, per folder ─────────────────
-        for base_date, folders in sorted(night_groups.items()):
-            for folder in folders:
-                mask = (df[night_col] == base_date)
-                # Re-load folder boundaries by matching folder rows
-                # (simpler: normalise per night after concat, which is equivalent
-                #  when folders don't overlap in time)
-                pass
-
-        # Normalise per night: (F - mean) / mean
+        # Normalise per night: (F − mean) / mean
         for night in nights:
             mask = df[night_col] == night
             mean = df.loc[mask, "rel_flux_T1"].mean()
@@ -275,6 +325,30 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
         y_label  = "(F − F̄) / F̄  [fractional flux]"
         invert_y = False
 
+    # ── Apply magnitude corrections (magnitude mode only, right before plotting)
+    # Interpolated by JD and added to the magnitude column, after
+    # flux_to_mag so units are consistent. Nights without a correction file
+    # are left untouched. Skipped entirely if use_mag_correction=False.
+    if magnitude and use_mag_correction and corrections:
+        for night, corr_list in corrections.items():
+            mask     = df[night_col] == night
+            night_df = df.loc[mask].copy()
+
+            # Merge correction tables from multiple sub-folders for this night
+            if len(corr_list) == 1:
+                jd_all, corr_all = corr_list[0]
+            else:
+                jd_all   = np.concatenate([c[0] for c in corr_list])
+                corr_all = np.concatenate([c[1] for c in corr_list])
+                sort_idx = np.argsort(jd_all)
+                jd_all, corr_all = jd_all[sort_idx], corr_all[sort_idx]
+                _, unique_idx    = np.unique(jd_all, return_index=True)
+                jd_all, corr_all = jd_all[unique_idx], corr_all[unique_idx]
+
+            night_df = _apply_mag_correction(night_df, jd_all, corr_all)
+            df.loc[mask, "rel_flux_T1"] = night_df["rel_flux_T1"].values
+            print(f"  Applied mag correction to night {night}")
+
     # ── Global t_0: brightest point across all nights ─────────────────────────
     if period is not None:
         t_0 = df["J.D.-2400000"].iloc[
@@ -282,7 +356,7 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
             else np.argmax(df["rel_flux_T1"].values)
         ]
 
-    # ── Zero-point alignment (replaces nightly mean subtraction) ──────────────
+    # ── Zero-point alignment ───────────────────────────────────────────────────
     if period is not None:
         df = _align_nights_by_phase(df, night_col, period, t_0, magnitude)
     else:
@@ -340,8 +414,9 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
         ax.set_visible(False)
 
     for ax, night in zip(axes_flat, nights):
-        sub = df[df[night_col] == night]
-        bjd = sub["J.D.-2400000"]
+        sub      = df[df[night_col] == night]
+        bjd      = sub["J.D.-2400000"]
+        has_corr = night in corrections and magnitude and use_mag_correction
 
         if period is not None:
             x_data  = _compute_phase(bjd, t_0, period)
@@ -353,7 +428,10 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
 
         _errorbar(ax, x_data, sub["rel_flux_T1"], sub["rel_flux_err_T1"])
         ax.set_xlabel(x_label, fontsize=10)
-        ax.set_title(night, fontsize=10, fontweight="bold")
+
+        # Mark corrected nights in the subplot title
+        title = f"{night}  ✓ corr" if has_corr else night
+        ax.set_title(title, fontsize=10, fontweight="bold")
         _style_ax(ax)
 
         if axes_flat.index(ax) % n_cols == 0:
