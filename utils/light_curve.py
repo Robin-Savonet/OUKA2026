@@ -218,10 +218,19 @@ def _apply_mag_correction(df, jd_corr, mag_corr):
     return df
 
 
-def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", period=None,
-                                merge_nights=False, nb_plot_per_row=3,
-                                magnitude=False, filter_name=None, exptime=1.0,
-                                airmass_col="AIRMASS", use_mag_correction=True):
+def plot_light_curve_all_nights(
+        TARGET, 
+        target_dir='.', 
+        night_col="night", 
+        period=None,
+        merge_nights=False, 
+        nb_plot_per_row=3,
+        magnitude=False, 
+        filter_name=None,
+        exptime=1.0,
+        airmass_col="AIRMASS", 
+        use_phase_alignment=False,
+        use_mag_correction=True):
     """
     Automatically discovers all night folders under target_dir, loads and
     normalises each folder on the fly, and plots the light curve.
@@ -356,8 +365,8 @@ def plot_light_curve_all_nights(TARGET, target_dir='.', night_col="night", perio
             else np.argmax(df["rel_flux_T1"].values)
         ]
 
-    # ── Zero-point alignment ───────────────────────────────────────────────────
-    if period is not None:
+    # ── Zero-point alignment (replaces nightly mean subtraction) ──────────────
+    if period is not None and use_phase_alignment:
         df = _align_nights_by_phase(df, night_col, period, t_0, magnitude)
     else:
         for night in nights:
