@@ -176,7 +176,7 @@ def _align_nights_by_phase(df, night_col, period, t_0, magnitude=False):
     df.drop(columns="phase", inplace=True)
     return df
 
-def _load_mag_correction(night_dir):
+def _load_mag_correction(night_dir, correction_file="mag_correction.dat"):
     """
     Load a mag_correction.dat file from a night folder if it exists.
 
@@ -185,7 +185,7 @@ def _load_mag_correction(night_dir):
 
     Returns a (jd_array, correction_array) tuple, or (None, None) if absent.
     """
-    corr_path = os.path.join(night_dir, "mag_correction.dat")
+    corr_path = os.path.join(night_dir, correction_file)
     if not os.path.isfile(corr_path):
         return None, None
 
@@ -219,18 +219,20 @@ def _apply_mag_correction(df, jd_corr, mag_corr):
 
 
 def plot_light_curve_all_nights(
-        TARGET, 
-        target_dir='.', 
-        night_col="night", 
+        TARGET,
+        target_dir='.',
+        night_col="night",
         period=None,
-        merge_nights=False, 
+        merge_nights=False,
         nb_plot_per_row=3,
-        magnitude=False, 
+        magnitude=False,
         filter_name=None,
         exptime=1.0,
-        airmass_col="AIRMASS", 
+        airmass_col="AIRMASS",
         use_phase_alignment=False,
-        use_mag_correction=True):
+        use_mag_correction=True,
+        correction_file="mag_correction.dat",
+        save_txt=True):
     """
     Automatically discovers all night folders under target_dir, loads and
     normalises each folder on the fly, and plots the light curve.
@@ -293,10 +295,10 @@ def plot_light_curve_all_nights(
             print(f"  Loaded {folder}  ({len(df_folder)} rows)")
 
             # Try to load a magnitude correction for this sub-folder
-            jd_corr, mag_corr = _load_mag_correction(folder_path)
+            jd_corr, mag_corr = _load_mag_correction(folder_path, correction_file)
             if jd_corr is not None:
                 corrections[base_date].append((jd_corr, mag_corr))
-                print(f"    → mag_correction.dat found in {folder}  ({len(jd_corr)} points)")
+                print(f"    → {correction_file} found in {folder}  ({len(jd_corr)} points)")
 
         dfs.append(pd.concat(night_dfs, ignore_index=True))
 
@@ -373,6 +375,13 @@ def plot_light_curve_all_nights(
             mask         = df[night_col] == night
             nightly_mean = df.loc[mask, "rel_flux_T1"].mean()
             df.loc[mask, "rel_flux_T1"] = df.loc[mask, "rel_flux_T1"] - nightly_mean
+
+    # ── Save corrected magnitudes to .txt (all nights combined) ───────────────
+    if magnitude and save_txt:
+        out_path = f"{TARGET}_magnitudes.txt"
+        out_data = df[["J.D.-2400000", "rel_flux_T1", "rel_flux_err_T1"]].sort_values("J.D.-2400000")
+        np.savetxt(out_path, out_data.values, fmt="%.6f")
+        print(f"  Saved {out_path}  ({len(out_data)} rows)")
 
     # ── Phase-folded single plot ───────────────────────────────────────────────
     if period is not None and merge_nights:
