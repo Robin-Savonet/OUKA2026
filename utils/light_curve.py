@@ -43,6 +43,53 @@ def _errorbar(ax, x, flux, err, color="steelblue", ecolor="lightsteelblue", labe
     )
 
 
+def fit_fourier(phase, flux, err, order=4):
+    """
+    Fit a Fourier series of given order to phase-folded data.
+
+    Parameters
+    ----------
+    phase  : array-like  - phases in [0, 1]
+    flux   : array-like  - flux (or magnitude) values
+    err    : array-like  - 1-sigma uncertainties (used as weights)
+    order  : int         - number of harmonic terms (default: 4)
+
+    Returns
+    -------
+    phase_fit : ndarray  - dense phase grid in [0, 1]
+    flux_fit  : ndarray  - evaluated Fourier model on that grid
+    coeffs    : ndarray  - [a0, a1, b1, a2, b2, ...]  (2*order+1 values)
+    """
+    phase = np.asarray(phase)
+    flux  = np.asarray(flux)
+    err   = np.asarray(err)
+    w     = 1.0 / err**2               # inverse-variance weights
+
+    # Build design matrix: [1, cos(2*pi*k*phase), sin(2*pi*k*phase)] for k=1..order
+    cols = [np.ones_like(phase)]
+    for k in range(1, order + 1):
+        cols.append(np.cos(2 * np.pi * k * phase))
+        cols.append(np.sin(2 * np.pi * k * phase))
+    A = np.column_stack(cols)            # shape (N, 2*order+1)
+
+    # Weighted least-squares: (A^T W A) c = A^T W y
+    W      = np.diag(w)
+    AtWA   = A.T @ W @ A
+    AtWy   = A.T @ (w * flux)
+    coeffs = np.linalg.solve(AtWA, AtWy)
+
+    # Evaluate on a dense grid
+    phase_fit = np.linspace(0, 1, 500)
+    cols_fit  = [np.ones_like(phase_fit)]
+    for k in range(1, order + 1):
+        cols_fit.append(np.cos(2 * np.pi * k * phase_fit))
+        cols_fit.append(np.sin(2 * np.pi * k * phase_fit))
+    A_fit    = np.column_stack(cols_fit)
+    flux_fit = A_fit @ coeffs
+
+    return phase_fit, flux_fit, coeffs
+
+
 def sanity_check(df):
     # ── Quick sanity check ────────────────────────────────────────────────────
     required_cols = ["J.D.-2400000", "rel_flux_T1", "rel_flux_err_T1"]
@@ -65,13 +112,13 @@ def plot_light_curve(TARGET, NIGHT, bjd, flux, err, period=None, subtract_mean=T
 
     Parameters
     ----------
-    TARGET        : str        — target name
-    NIGHT         : str        — night label
-    bjd           : Series     — J.D.-2400000 values
-    flux          : Series     — rel_flux_T1 values
-    err           : Series     — rel_flux_err_T1 values
-    period        : float|None — if given, x-axis shows phase in [0, 1] (hours)
-    subtract_mean : bool       — if True (default), subtract the mean flux before plotting
+    TARGET        : str        - target name
+    NIGHT         : str        - night label
+    bjd           : Series     - J.D.-2400000 values
+    flux          : Series     - rel_flux_T1 values
+    err           : Series     - rel_flux_err_T1 values
+    period        : float|None - if given, x-axis shows phase in [0, 1] (hours)
+    subtract_mean : bool       - if True (default), subtract the mean flux before plotting
     """
     flux = flux.copy()
 
@@ -97,7 +144,7 @@ def plot_light_curve(TARGET, NIGHT, bjd, flux, err, period=None, subtract_mean=T
 
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
-    ax.set_title(f"Light curve — {TARGET} / {NIGHT}", fontsize=13, fontweight="bold")
+    ax.set_title(f"Light curve - {TARGET} / {NIGHT}", fontsize=13, fontweight="bold")
     _style_ax(ax)
     ax.legend(fontsize=10)
     fig.tight_layout()
@@ -115,7 +162,7 @@ def load_night(night_dir, night_label):
         names=["index", "Label", "J.D.-2400000", "rel_flux_T1", "rel_flux_err_T1",
                "AIRMASS", "Source-Sky_T1", "Source_Error_T1"]
     )
-    # No normalisation here — raw flux preserved for plot_light_curve_all_nights
+    # No normalisation here - raw flux preserved for plot_light_curve_all_nights
     df["night"] = night_label
     return df
 
@@ -146,7 +193,7 @@ def _align_nights_by_phase(df, night_col, period, t_0, magnitude=False):
         phase_max = min(sub["phase"].max(), ref_data["phase"].max())
 
         if phase_max - phase_min < 0.05:
-            # No meaningful overlap — fall back to zero offset
+            # No meaningful overlap - fall back to zero offset
             print(f"  WARNING: night {night} has little phase overlap with reference, offset set to 0")
             offsets[night] = 0.0
             continue
@@ -232,7 +279,9 @@ def plot_light_curve_all_nights(
         use_phase_alignment=False,
         use_mag_correction=True,
         correction_file="mag_correction.dat",
-        save_txt=True):
+        save_txt=True,
+        fourier_fit=False,
+        fourier_order=4):
     """
     Automatically discovers all night folders under target_dir, loads and
     normalises each folder on the fly, and plots the light curve.
@@ -248,19 +297,22 @@ def plot_light_curve_all_nights(
 
     Parameters
     ----------
-    TARGET          : str        — target name, used in titles
-    target_dir      : str        — path to the folder containing night subfolders
-    night_col       : str        — column name for the night label (default: 'night')
-    period          : float|None — period in hours for phase folding, or None
-    merge_nights    : bool       — if True and period given, overlay all nights on one plot
-    nb_plot_per_row : int        — max number of panels per row (default: 3)
-    magnitude       : bool       — if True, convert Source-Sky_T1 flux to calibrated magnitude
-    filter_name     : str        — required if magnitude=True, one of 'B', 'V', 'R', 'I'
-    exptime         : float      — exposure time in seconds used to convert ADU to flux
+    TARGET          : str        - target name, used in titles
+    target_dir      : str        - path to the folder containing night subfolders
+    night_col       : str        - column name for the night label (default: 'night')
+    period          : float|None - period in hours for phase folding, or None
+    merge_nights    : bool       - if True and period given, overlay all nights on one plot
+    nb_plot_per_row : int        - max number of panels per row (default: 3)
+    magnitude       : bool       - if True, convert Source-Sky_T1 flux to calibrated magnitude
+    filter_name     : str        - required if magnitude=True, one of 'B', 'V', 'R', 'I'
+    exptime         : float      - exposure time in seconds used to convert ADU to flux
                                    (required if magnitude=True, default: 1.0)
-    airmass_col     : str        — airmass column name (default: 'AIRMASS')
-    use_mag_correction : bool   — if True (default), apply mag_correction.dat when found;
+    airmass_col     : str        - airmass column name (default: 'AIRMASS')
+    use_mag_correction : bool    - if True (default), apply mag_correction.dat when found;
                                    set to False to skip all corrections even if files exist
+    fourier_fit     : bool       - if True and merge_nights=True, overlay a weighted Fourier
+                                   fit on the phase-folded plot (default: False)
+    fourier_order   : int        - number of harmonic terms in the Fourier fit (default: 4)
     """
     if magnitude and filter_name is None:
         raise ValueError("filter_name must be provided when magnitude=True")
@@ -275,7 +327,7 @@ def plot_light_curve_all_nights(
     if not all_folders:
         raise FileNotFoundError(f"No night folders found in:\n  {target_dir}")
 
-    # Group by base date — e.g. 26_03_01_a and 26_03_01_b → 26_03_01
+    # Group by base date - e.g. 26_03_01_a and 26_03_01_b → 26_03_01
     night_groups = defaultdict(list)
     for folder in all_folders:
         base = re.sub(r"_[a-z]$", "", folder)
@@ -392,10 +444,29 @@ def plot_light_curve_all_nights(
             phase = _compute_phase(sub["J.D.-2400000"], t_0, period)
             _errorbar(ax, phase, sub["rel_flux_T1"], sub["rel_flux_err_T1"],
                       color=colors[i % len(colors)], ecolor="lightgray", label=night)
+
+        # ── Fourier fit ────────────────────────────────────────────────────────
+        if fourier_fit:
+            all_phase = _compute_phase(df["J.D.-2400000"], t_0, period)
+            phase_fit, flux_fit, coeffs = fit_fourier(
+                all_phase,
+                df["rel_flux_T1"].values,
+                df["rel_flux_err_T1"].values,
+                order=fourier_order,
+            )
+            ax.plot(phase_fit, flux_fit,
+                    color="black", linewidth=1.8, zorder=5,
+                    label=f"Fourier fit (order {fourier_order})")
+            print(f"  Fourier coefficients (order {fourier_order}):")
+            print("  a0 =", round(coeffs[0], 5))
+            for k in range(1, fourier_order + 1):
+                print(f"  a{k} = {coeffs[2*k-1]:.5f},  b{k} = {coeffs[2*k]:.5f}")
+        # ── end Fourier fit ────────────────────────────────────────────────────
+
         ax.set_xlim(-0.02, 1.02)
         ax.set_xlabel(f"Phase  (period = {period} h)", fontsize=12)
         ax.set_ylabel(y_label, fontsize=12)
-        ax.set_title(f"Phase-folded light curve — {TARGET} — All nights", fontsize=13, fontweight="bold")
+        ax.set_title(f"Phase-folded light curve - {TARGET} - All nights", fontsize=13, fontweight="bold")
         if invert_y:
             ax.invert_yaxis()
         _style_ax(ax)
@@ -448,7 +519,7 @@ def plot_light_curve_all_nights(
         ax.set_xlabel(x_label, fontsize=10)
 
         # Mark corrected nights in the subplot title
-        title = f"{night}  ✓ corr" if has_corr else night
+        title = night
         ax.set_title(title, fontsize=10, fontweight="bold")
         _style_ax(ax)
 
@@ -458,7 +529,7 @@ def plot_light_curve_all_nights(
     if invert_y:
         axes_flat[0].invert_yaxis()
 
-    fig.suptitle(f"Light curve — {TARGET} — All observation nights", fontsize=13, fontweight="bold")
+    fig.suptitle(f"Light curve - {TARGET} - All observation nights", fontsize=13, fontweight="bold")
     fig.tight_layout()
     plt.show()
 
@@ -468,10 +539,10 @@ def plot_lomb_scargle(TARGET, df, min_period=0.05, max_period=1.0):
 
     Parameters
     ----------
-    TARGET      : str   — target name, used in the figure title
+    TARGET      : str   - target name, used in the figure title
     df          : DataFrame with columns J.D.-2400000, rel_flux_T1, rel_flux_err_T1
-    min_period  : float — minimum period to search, in days (default: 0.05  ~1.2 h)
-    max_period  : float — maximum period to search, in days (default: 1.0   ~24 h)
+    min_period  : float - minimum period to search, in days (default: 0.05  ~1.2 h)
+    max_period  : float - maximum period to search, in days (default: 1.0   ~24 h)
     """
     t    = df["J.D.-2400000"].values
     flux = df["rel_flux_T1"].values
@@ -497,7 +568,7 @@ def plot_lomb_scargle(TARGET, df, min_period=0.05, max_period=1.0):
     ax.axvline(rotation_period * 24, color="darkorange", linewidth=1.5, linestyle=":",  label=f"Rotation: {rotation_period * 24:.3f} h")
     ax.set_xlabel("Period (hours)", fontsize=12)
     ax.set_ylabel("Lomb-Scargle Power", fontsize=12)
-    ax.set_title(f"Periodogram — {TARGET}", fontsize=12, fontweight="bold")
+    ax.set_title(f"Periodogram - {TARGET}", fontsize=12, fontweight="bold")
     _style_ax(ax)
     ax.legend(fontsize=10)
 
